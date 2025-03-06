@@ -1,0 +1,80 @@
+trigger:
+  - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # Task variables.
+  azureSubscription: 'AzureConnection' # Azure Resource Manager connection.
+
+  # Resource group variables.
+  location: 'eastus2'
+  resourceGroupName: 'ResourceGroup'
+
+  # Virtual network variables.
+  virtualNetworkName: 'VirtualNetwork'
+  addressPrefix: '10.0.0.0/16'
+  subnetName: 'Subnet'
+  subnetPrefix: '10.0.1.0/24'
+
+  # Network security group variables.
+  networkSecurityGroupName: 'NetworkSecurityGroup'
+
+  # Public IP variables.
+  publicIPName: 'PublicIP'
+
+  # Virtual machine variables.
+  vmName: 'VirtualMachine'
+  adminPassword: 'AdminAdmin123'
+  adminUsername: 'alice'
+  imagePublisher: 'Canonical'
+  imageOffer: '0001-com-ubuntu-server-jammy'
+  imageSku: '22_04-lts-gen2'
+  imageVersion: 'latest'
+  vmSize: 'Standard_B1s'
+
+steps:
+  - task: AzureCLI@2
+    inputs:
+      azureSubscription: $(azureSubscription)
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        set -e # Ends script if any command fails.
+
+        echo "Creating resource group..."
+        az group create --location $(location) --name $(resourceGroupName)
+        echo "Resource group created."
+
+        echo "Creating virtual network..."
+        az network vnet create --name $(virtualNetworkName) --resource-group $(resourceGroupName) --address-prefix $(addressPrefix) --subnet-name $(subnetName) --subnet-prefix $(subnetPrefix)
+        az network vnet wait --created --name $(virtualNetworkName) --resource-group $(resourceGroupName)
+        echo "Virtual network created."
+
+        echo "Creating network security group..."
+        az network nsg create --name $(networkSecurityGroupName) --resource-group $(resourceGroupName)
+        az network nsg wait --created --name $(networkSecurityGroupName) --resource-group $(resourceGroupName)
+        echo "Network security group created."
+        echo "Creating NSG rules..."
+        az network nsg rule create --name AllowSsh --nsg-name $(networkSecurityGroupName) --priority 1000 --resource-group $(resourceGroupName) --access Allow --destination-address-prefix '*' --destination-port-range 22 --direction Inbound --protocol Tcp --source-address-prefix '*' --source-port-range '*'
+        az network nsg rule create --name AllowHttp --nsg-name $(networkSecurityGroupName) --priority 1010 --resource-group $(resourceGroupName) --access Allow --destination-address-prefix '*' --destination-port-range 80 --direction Inbound --protocol Tcp --source-address-prefix '*' --source-port-range '*'
+        az network nsg rule create --name AllowIcmp --nsg-name $(networkSecurityGroupName) --priority 1020 --resource-group $(resourceGroupName) --access Allow --destination-address-prefix '*' --destination-port-range '*' --direction Inbound --protocol Icmp --source-address-prefix '*' --source-port-range '*'
+        echo "NSG rules created."
+
+        echo "Creating public IP..."
+        az network public-ip create --name $(publicIPName) --resource-group $(resourceGroupName) --allocation-method Static --sku Standard
+        az network public-ip wait --created --name $(publicIPName) --resource-group $(resourceGroupName)
+        echo "Public IP created."
+
+        echo "Creating virtual machine..."
+        az vm create --name $(vmName) --resource-group $(resourceGroupName) --admin-password $(adminPassword) --admin-username $(adminUsername) --image $(imagePublisher):$(imageOffer):$(imageSku):$(imageVersion) --nsg $(networkSecurityGroupName) --public-ip-address $(publicIPName) --size $(vmSize) --subnet $(subnetName) --vnet-name $(virtualNetworkName)
+        az vm wait --created --name $(vmName) --resource-group $(resourceGroupName)
+        echo "Virtual machine created."
+
+        echo "Installing Apache on the VM..."
+        az vm run-command invoke --command-id RunShellScript --name $(vmName) --resource-group $(resourceGroupName) --scripts "sudo apt update && sudo apt install -y apache2"
+        echo "Apache installed."
+        echo "Creating landing page..."
+        az vm run-command invoke --command-id RunShellScript --name $(vmName) --resource-group $(resourceGroupName) --scripts "echo 'Azure Pipelines says hi!' | sudo tee /var/www/html/index.html"
+        echo "Landing page created."
